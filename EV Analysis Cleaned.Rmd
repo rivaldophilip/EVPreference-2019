@@ -1,0 +1,493 @@
+<!-- libraries -->
+```{r}
+library(readr)
+library(robustbase)
+library(dplyr)
+library(corrr)
+library(clustMixType)
+library(ggplot2)
+library(arsenal)
+library(pastecs)
+library(sandwich)
+library(dplyr)
+library(dlookr)
+library(NbClust)
+library(magrittr)
+library(AER)
+library(boot)
+require(caret)
+require(rpart)
+require(rpart.plot)
+require(RColorBrewer)
+require(rattle)
+require(randomForest)
+library(glmnet)
+```
+
+<!-- Setups (data, my_control) -->
+```{r}
+# data
+
+ev_all <- read_csv("C:/Users/user/Downloads/ev_clean.csv")
+ev_all$hashed_id <- NULL
+ev_clean <- read_csv("C:/Users/user/Downloads/ev_survey2.csv")
+ev_map <- read_csv("C:/Users/user/Downloads/mapped_ev.csv")
+ev_map <- mutate_at(ev_map, vars(area, ni, aware, accel, m_charge, interest, purchase), as.factor)
+
+purchase_map <- read_csv("C:/Users/user/Downloads/mapped_purchasing.csv")
+purchase_map$gender<-as.numeric(purchase_map$gender)
+purchase_map$topinfluencer<-as.numeric(purchase_map$topinfluencer)
+purchase_map <- mutate_at(purchase_map, vars(gender, area, ni, topinfluencer), as.factor)
+
+ev_all <- mutate_at(ev_all, vars(area, ni, aware, accel, m_charge, interest, purchase), as.factor)
+ev_clean <- mutate_at(ev_clean, vars(area, ni, aware, accel, m_charge, interest, purchase), as.factor)
+tradeoff_clean <- read.csv("C:/Users/user/Downloads/tradeoff_clean.csv")
+
+ev_vs_purchase <- read.csv("C:/Users/user/Downloads/ev_vs_purchase.csv")
+```
+
+```{r}
+# function
+
+my_controls <- tableby.control(
+  test = T,
+  total = T,
+  numeric.test = "kwt", cat.test = "chisq",
+  numeric.stats = c("meansd", "medianq1q3", "range"),
+  cat.stats = c("countpct"),
+  stats.labels = list(
+    meansd = "Mean (SD)",
+    medianq1q3 = "Median (Q1, Q3)",
+    range = "Min - Max"
+  )
+)
+```
+
+<!-- EV Survey 1 -->
+```{r}
+boxplot <- adjbox(ev_all$age, main="adjusted boxplot of data")
+outliers <- adjbox(ev_all$age, plot=FALSE)$out
+list(outliers)
+
+ev_all_clean<-ev_all[!(ev_all$order<2 | ev_all$order>30),]
+ev_all_clean<-ev_all_clean[!(ev_all_clean$age<18),]
+ev_all_clean<-ev_all_clean[!(ev_all_clean$whours>=20),]
+
+write.csv(ev_all_clean, "ev_survey1_clean.csv")
+
+# EV for survey 1
+desc_stats_all1 <- tableby(aware ~ .,
+  data = ev_all_clean,
+  control = my_controls
+)
+
+summary(desc_stats_all1,
+  title = "Summary Statistic of EV Data by Aware",
+  pfootnote=TRUE
+)
+
+desc_stats_all9 <- tableby(interaction(age,aware) ~ .,
+  data = ev_all_clean,
+  control = my_controls
+)
+
+summary(desc_stats_all9,
+  title = "Summary Statistic of EV Data by Age and Aware",
+  pfootnote=TRUE
+)
+
+desc_stats_all2 <- tableby(interaction(ni,aware) ~ .,
+  data = ev_all_clean,
+  control = my_controls
+)
+
+summary(desc_stats_all2,
+  title = "Summary Statistic of EV Data by Income and Aware",
+  pfootnote=TRUE
+)
+
+desc_stats_all3 <- tableby(ni ~ .,
+  data = ev_all,
+  control = my_controls
+)
+
+summary(desc_stats_all3,
+  title = "Summary Statistic of EV Data by Income",
+  pfootnote=TRUE
+)
+
+subset.data.frame(ev_jabodetabek <- subset(ev_all_clean, area =="JABODETABEK"))
+
+ev_all_clean %<>% as_tibble() %>% mutate(
+  Jabo = area=="JABODETABEK",
+) 
+ev_kota<-ev_all_clean
+ev_kota[,20] <- lapply(ev_kota[,20], as.numeric)
+ev_kota[,2]<-NULL
+
+# ev_all_clean[,2]<-NULL
+
+desc_stats_all4 <- tableby(Jabo ~ .,
+  data = ev_kota,
+  control = my_controls
+)
+
+summary(desc_stats_all4,
+  title = "Summary Statistic of EV Data by Area",
+  pfootnote=TRUE
+)
+
+subset.data.frame(ev_kota1 <- subset(ev_kota, aware ==1))
+subset.data.frame(ev_kota0 <- subset(ev_kota, aware ==0))
+
+desc_stats_all5 <- tableby(Jabo ~ .,
+  data = ev_kota1,
+  control = my_controls
+)
+
+summary(desc_stats_all5,
+  title = "Summary Statistic of EV Data Aware by Area",
+  pfootnote=TRUE
+)
+
+desc_stats_all6 <- tableby(Jabo ~ .,
+  data = ev_kota0,
+  control = my_controls
+)
+
+summary(desc_stats_all6,
+  title = "Summary Statistic of EV Data Not-aware by Area",
+  pfootnote=TRUE
+)
+
+desc_stats_all7 <- tableby(purchase ~ .,
+  data = ev_kota,
+  control = my_controls
+)
+
+summary(desc_stats_all7,
+  title = "Summary Statistic of EV Data by Purchase",
+  pfootnote=TRUE
+)
+```
+
+<!-- EV Survey 1 Random forest -->
+```{r}
+ev_s1_predict <- dplyr::select(ev_kota, -c(ni, interest))
+
+intrain <- createDataPartition(y=ev_s1_predict$purchase, p=0.6, list=FALSE)
+training <- ev_s1_predict[intrain,]
+testing <- ev_s1_predict[-intrain,]
+
+rf.fit <- train(purchase~., method="rf", trControl=trainControl(method="cv", number=5), data=training)
+rf.predict <- predict(rf.fit, data=testing)
+
+varImp(rf.fit)
+
+logit <- glm(purchase ~., data = ev_s1_predict, family = "binomial")
+summary(logit)
+```
+
+<!-- EV Survey 2 Forest and Logistic -->
+```{r}
+ev_kota2 <-ev_clean
+ev_kota2 %<>% as_tibble() %>% mutate(
+  Jabo = area=="JABODETABEK",
+) 
+ev_kota2[,33] <- lapply(ev_kota2[,33], as.numeric)
+ev_kota2[,2]<-NULL
+
+ev_s2_predict <- dplyr::select(ev_kota2, -c(interest))
+
+intrain2 <- createDataPartition(y=ev_s2_predict$purchase, p=0.6, list=FALSE)
+training2 <- ev_s2_predict[intrain2,]
+testing2 <- ev_s2_predict[-intrain2,]
+
+rf.fit2 <- train(purchase~., method="rf", trControl=trainControl(method="cv", number=5), data=training2)
+rf.predict2 <- predict(rf.fit2, data=testing2)
+
+varImp(rf.fit2)
+
+logit2 <- glm(purchase ~., data = ev_s2_predict, family = "binomial")
+summary(logit2)
+```
+
+
+<!-- EV Survey 2 Bootstrap -->
+```{r}
+#EV survey 2 bootstrap
+set.seed(1315)
+
+ev_area<-ev_clean
+boot_area <- sample_n(ev_area, 3000, replace=T)
+
+ev_boot<-ev_clean
+ev_boot %<>% as_tibble() %>% mutate(
+  Jabo = area=="JABODETABEK",
+) 
+ev_boot$Jabo <- as.numeric(ev_boot$Jabo)
+ev_boot$area<-NULL
+
+write.csv(boot_s2, "ev_boot.csv")
+
+set.seed(1315)
+boot_s2 <- sample_n(ev_boot, 3000, replace=T)
+boot_s2<- mutate_at(boot_s2, vars(ni, aware, accel, m_charge, interest, purchase, Jabo), as.factor)
+
+desc_boot <- tableby(aware ~ .,
+  data = boot_s2,
+  control = my_controls
+)
+ 
+summary(desc_boot,
+  title = "Summary Statistic of Booted Survey 2 Divided by Aware",
+  pfootnote=TRUE
+)
+
+desc_boot2 <- tableby(area ~ .,
+  data = ev_map,
+  control = my_controls
+)
+ 
+summary(desc_boot2,
+  title = "Summary Statistic of Booted Survey 2 Divided by Area",
+  pfootnote=TRUE
+)
+
+logit2b <- glm(purchase ~., data = boot_s2, family = "binomial")
+summary(logit2b)
+
+desc_boot3 <- tableby(interest ~ .,
+  data = boot.ev,
+  control = my_controls
+)
+ 
+summary(desc_boot3,
+  title = "Summary Statistic of Booted Survey 2 Divided by Interest",
+  pfootnote=TRUE
+)
+
+desc_boot4 <- tableby(age ~ .,
+  data = boot.ev,
+  control = my_controls
+)
+ 
+summary(desc_boot4,
+  title = "Summary Statistic of Booted Survey 2 Divided by Age",
+  pfootnote=TRUE
+)
+
+desc_boot5 <- tableby(ni ~ .,
+  data = boot.ev,
+  control = my_controls
+)
+ 
+summary(desc_boot5,
+  title = "Summary Statistic of Booted Survey 2 Divided by NI",
+  pfootnote=TRUE
+)
+```
+
+<!-- EV Survey 1 Bootstrap -->
+```{r}
+#EV survey 1 bootstrap
+ev_all_boot<-ev_all_clean
+
+ev_all_boot %<>% as_tibble() %>% mutate(
+  Jabo = area=="JABODETABEK",
+) 
+ev_all_boot$Jabo <- as.numeric(ev_all_boot$Jabo)
+ev_all_boot$area<-NULL
+
+set.seed(1315)
+boot_s <- sample_n(ev_all_boot, 3000, replace=T)
+boot_s<- mutate_at(boot_s, vars(ni, aware, accel, m_charge, interest, purchase, Jabo), as.factor)
+
+write.csv(boot_s, "ev_boot_survey1.csv")
+
+desc_boot1 <- tableby(aware ~ .,
+  data = boot_s,
+  control = my_controls
+)
+ 
+summary(desc_boot1,
+  title = "Summary Statistic of Booted Survey 2 Divided by Aware",
+  pfootnote=TRUE
+)
+
+desc_boot2 <- tableby(Jabo ~ .,
+  data = boot_s,
+  control = my_controls
+)
+ 
+summary(desc_boot2,
+  title = "Summary Statistic of Booted Survey 2 Divided by Aware",
+  pfootnote=TRUE
+)
+```
+
+<!-- EV Survey 2 -->
+```{r}
+desc_stats <- tableby(interaction(ni,aware) ~ .,
+  data = ev_clean,
+  control = my_controls
+)
+ 
+summary(desc_stats,
+  title = "Summary Statistic of EV Data by SES and Aware",
+  pfootnote=TRUE
+)
+
+desc_stats2 <- tableby(aware ~ .,
+  data = ev_clean,
+  control = my_controls
+)
+
+summary(desc_stats2,
+  title = "Summary Statistic of EV Data by Aware",
+  pfootnote=TRUE
+)
+
+desc_stats3 <- tableby(interaction(aware,interest) ~ .,
+  data = ev_clean,
+  control = my_controls
+)
+
+summary(desc_stats3,
+  title = "Summary Statistic of EV Data by Aware and Interest",
+  pfootnote=TRUE
+)
+
+desc_stats4 <- tableby(purchase ~ .,
+  data = ev_clean,
+  control = my_controls
+)
+
+summary(desc_stats4,
+  title = "Summary Statistic of EV Data by Purchase",
+  pfootnote=TRUE
+)
+
+desc_stats5 <- tableby(interest ~ .,
+  data = ev_clean,
+  control = my_controls
+)
+
+summary(desc_stats5,
+  title = "Summary Statistic of People with No Interest in EV",
+  pfootnote=TRUE
+)
+```
+
+<!-- Tradeoffs: -->
+```{r}
+dlookr::normality(tradeoff_clean)
+
+tradeoff_purchase <- tradeoff_clean[1:9]
+tradeoff_ev <- tradeoff_clean[-c(1:9)]
+
+desc_stats4 <- tableby(~.,
+  data = tradeoff_clean,
+  control = my_controls
+)
+
+summary(desc_stats4,
+  title = "Summary Statistic of Trade-offs",
+  pfootnote=TRUE
+)
+```
+
+```{r}
+#trade-off
+t.test(tradeoff_clean$tr_accel, tradeoff_clean$tr_ev_accel, var.equal=FALSE)
+t.test(tradeoff_clean$tr_v, tradeoff_clean$tr_ev_v, var.equal=FALSE)
+t.test(tradeoff_clean$tr_dim, tradeoff_clean$tr_ev_dim, var.equal=FALSE)
+t.test(tradeoff_clean$tr_model, tradeoff_clean$tr_ev_model, var.equal=FALSE)
+t.test(tradeoff_clean$tr_brand, tradeoff_clean$tr_ev_brand, var.equal=FALSE)
+t.test(tradeoff_clean$tr_bs, tradeoff_clean$tr_ev_bs, var.equal=FALSE)
+t.test(tradeoff_clean$tr_mt, tradeoff_clean$tr_ev_mt, var.equal=FALSE)
+t.test(tradeoff_clean$tr_eco, tradeoff_clean$tr_ev_eco, var.equal=FALSE)
+```
+
+<!-- EV vs Purchasing -->
+```{r}
+#EV vs Purchasing
+
+scaled_vs_1 <- ev_vs_purchase[ev_vs_purchase$EV==1,]
+scaled_vs_2 <- ev_vs_purchase[ev_vs_purchase$EV==0,]
+scaled_vs_1[, 7:10] <- scale(scaled_vs_1[, 7:10])
+scaled_vs_2[, 7:10] <- scale(scaled_vs_2[, 7:10])
+
+for(i in 7:10){
+  scaled_vs_2[,i]<-scaled_vs_2[,i]*0.8+0.2
+}
+
+scaled_vs <- rbind(scaled_vs_1, scaled_vs_2)
+
+desc_stats_vs1 <- tableby(EV ~ .,
+  data = scaled_vs,
+  control = my_controls
+)
+
+summary(desc_stats_vs1,
+  title = "Summary Statistic of EV vs Purchasing Data",
+  pfootnote=TRUE
+)
+```
+
+<!-- Clustering -->
+```{r}
+ev_cluster<-ev_clean
+for(m in c(1,31:ncol(ev_cluster))) {
+    ev_cluster[,m] <- as.numeric(as.character(ev_cluster[,m]))
+}
+ev_cluster$area<-NULL
+
+k_opt <- gplus_kproto(data = ev_cluster, k = 3:5, nstart = 5, verbose = FALSE)
+str(k_opt)
+kpres <- kproto(ev_cluster, 5)
+predicted.clusters <- predict(kpres, ev_cluster)
+
+clprofiles(kpres, ev_cluster)
+summary(kpres)
+
+ev_map[,1]<-NULL
+ev_cluster2<-ev_map
+
+# ev_cluster2 %<>% mutate_if(is.factor, as.numeric)
+
+ev_cluster2<-as.data.frame(ev_cluster2)
+k_opt2 <- cindex_kproto(data = ev_cluster2, k = 3:5, nstart = 5, verbose=FALSE)
+str(k_opt2)
+kpres2 <- kproto(ev_cluster2, 5)
+predicted.clusters2 <- predict(kpres2, ev_cluster2)
+summary(kpres2)
+```
+
+<!-- Purchasing -->
+```{r}
+purchase_clean <- read.csv("C:/Users/user/Downloads/purchase_clean.csv")
+purchase_clean <- mutate_at(purchase_clean, vars(ni, topinfluencer, registered_area, gender), as.factor)
+
+desc_purchase<- tableby(area
+~ .,
+  data = purchase_map,
+  control = my_controls
+)
+
+summary(desc_purchase,
+  title = "Summary Statistic of Purchase Data by Area",
+  pfootnote=TRUE
+)
+
+desc_purchase2<- tableby(ni~ .,
+  data = purchase_map,
+  control = my_controls
+)
+
+summary(desc_purchase2,
+  title = "Summary Statistic of Purchase Data by Income",
+  pfootnote=TRUE
+)
+```
+
